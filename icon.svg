@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Delta Chat bot">
+  <defs>
+    <linearGradient id="ddb-bg" x1="0" y1="0" x2="64" y2="64" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#3D6FD9"/>
+      <stop offset="1" stop-color="#2A4FA8"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="15" fill="url(#ddb-bg)"/>
+  <path d="M14 18c0-3.3 2.7-6 6-6h24c3.3 0 6 2.7 6 6v18c0 3.3-2.7 6-6 6H28l-9 8v-8h-1c-2.2 0-4-1.8-4-4z" fill="#fff"/>
+  <path d="M32 18.5 41.5 35h-19z" fill="none" stroke="#2A4FA8" stroke-width="3.2" stroke-linejoin="round"/>
+  <circle cx="48" cy="48" r="9" fill="#fff"/>
+  <rect x="44.6" y="46.4" width="6.8" height="5.6" rx="1.2" fill="#2A4FA8"/>
+  <path d="M45.9 46.6v-1.9a2.1 2.1 0 0 1 4.2 0v1.9" fill="none" stroke="#2A4FA8" stroke-width="1.5"/>
+</svg>

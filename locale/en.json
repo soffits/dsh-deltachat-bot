@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Delta Chat Bot",
+    "description": "Chat with DSH sessions over Delta Chat: an end-to-end encrypted chatmail bot on several relays, one session per chat, commands, files and voice messages."
+  }
+}
