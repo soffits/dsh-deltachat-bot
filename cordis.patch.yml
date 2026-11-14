@@ -1,0 +1,9 @@
+# Bundle layer for @soffits/dsh-deltachat-bot. The bot row's id is also its
+# settings namespace. The tools row registers deltachat_send for every agent;
+# disable it, or mount `@soffits/dsh-deltachat-bot/tools` in one agent preset,
+# to limit who gets it.
+- insert:
+    - id: deltachat-bot
+      name: '@soffits/dsh-deltachat-bot'
+    - id: deltachat-bot-tools
+      name: '@soffits/dsh-deltachat-bot/tools'

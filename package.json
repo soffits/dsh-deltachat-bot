@@ -1,0 +1,69 @@
+{
+  "name": "@soffits/dsh-deltachat-bot",
+  "version": "0.1.0",
+  "description": "Delta Chat bot for DeepSeek Harness: an end-to-end encrypted chatmail bot on several relays, one DSH session per chat, commands, files, voice messages and a send service for other plugins.",
+  "type": "module",
+  "main": "./index.js",
+  "bin": {
+    "dsh-deltachat": "./bin/dsh-deltachat.js"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./tools": "./tools.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "bin",
+    "index.js",
+    "tools.js",
+    "src/*.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "engines": {
+    "node": ">=22",
+    "dsh": ">=0.2.1-rc.2 <0.3.0-0"
+  },
+  "scripts": {
+    "test": "NODE_ENV=test node --import ./test/home.js --test \"test/*.test.js\"",
+    "check": "for f in index.js tools.js bin/*.js src/*.js test/*.js scripts/*.js; do node --check \"$f\" || exit 1; done",
+    "e2e": "node scripts/e2e.js"
+  },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "^3.18.5",
+    "@deltachat/jsonrpc-client": "2.69.0",
+    "@deltachat/stdio-rpc-server": "2.69.0"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "dsh",
+    "deltachat",
+    "chatmail",
+    "bot"
+  ],
+  "author": "Sakina",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/soffits/dsh-deltachat-bot.git"
+  },
+  "homepage": "https://github.com/soffits/dsh-deltachat-bot#readme",
+  "bugs": {
+    "url": "https://github.com/soffits/dsh-deltachat-bot/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
