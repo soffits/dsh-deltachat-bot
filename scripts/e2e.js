@@ -81,10 +81,13 @@ try {
   const textOf = async (person, msgId) => (await dc.rpc.getMessage(person.id, msgId)).text
   const sendAs = (person, chatId, data) => dc.rpc.sendMsg(person.id, chatId, messageData(data))
 
-  await sendAs(allowed, chatWithBot, { text: 'hello bot' })
+  const hello = await sendAs(allowed, chatWithBot, { text: 'hello bot' })
   const first = await wait(() => host.prompts[0], 'the first prompt')
   assert.match(first.content[0].text, /^\[Delta Chat message from Allowed \(Delta Chat name "Allowed Person", key [0-9A-F]{40}, chat \d+, message \d+\)\]\nhello bot$/u)
   log('text reached the session with the sender line')
+  const emojisOn = async (person, msgId) => ((await dc.rpc.getMessageReactions(person.id, msgId))?.reactions ?? []).map((reaction) => reaction.emoji)
+  await wait(async () => (await emojisOn(allowed, hello)).includes('⏳'), 'the working reaction')
+  log('the message shows ⏳ while its turn runs')
 
   // The stranger is ignored.
   await sendAs(stranger, strangerChat, { text: 'let me in' })
@@ -106,6 +109,8 @@ try {
     return undefined
   }, 'the answer')
   log('answer arrived as plain text')
+  await wait(async () => (await emojisOn(allowed, hello)).length === 0, 'the working reaction to go')
+  log('⏳ removed after the answer')
 
   // The bot's name and avatar reach the other side.
   const botContact = (await dc.rpc.getChatContacts(allowed.id, chatWithBot)).find((id) => id > 9)

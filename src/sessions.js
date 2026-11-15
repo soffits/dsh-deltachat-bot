@@ -152,11 +152,17 @@ export async function unarchive(ctx, sessionId) {
   return true
 }
 
-/** @returns whether a pending or recorded message carries this request id. */
-function hasRequest(agent, requestId) {
+/** @returns whether a message the agent has not taken yet carries this request id. */
+export function inInbox(agent, requestId) {
   const matches = (message) => message?.source?.kind === 'user' && message.source.rpcId === requestId
   const inbox = agent?.inbox
-  if (inbox?.nextTurn?.some?.(matches) || inbox?.nextStep?.some?.(matches)) return true
+  return inbox?.nextTurn?.some?.(matches) === true || inbox?.nextStep?.some?.(matches) === true
+}
+
+/** @returns whether a pending or recorded message carries this request id. */
+export function hasRequest(agent, requestId) {
+  if (inInbox(agent, requestId)) return true
+  const matches = (message) => message?.source?.kind === 'user' && message.source.rpcId === requestId
   const events = typeof agent?.session?.snapshotEvents === 'function' ? agent.session.snapshotEvents() : []
   return events.some((event) => event?.type === 'user/message' && matches(event.data))
 }
@@ -172,21 +178,23 @@ function hasRequest(agent, requestId) {
  * @param agent - the session's agent.
  * @param prompt - `{ requestId, text, attachments, mode }`; `mode` is `queue` or `steer`.
  * @param signal - request lifetime.
+ * @returns whether the prompt was handed over (false for a duplicate or an empty one).
  */
 export async function admitPrompt(ctx, agent, { requestId, text, attachments = [], mode }, signal) {
-  if (hasRequest(agent, requestId)) return
+  if (hasRequest(agent, requestId)) return false
   const content = [...(text.trim().length === 0 ? [] : [{ type: 'text', text }]), ...attachments]
-  if (content.length === 0) return
+  if (content.length === 0) return false
   const controller = ctx.get('sessionController')
   const sessionId = agent.session?.id ?? agent.id
   if (attachments.length === 0 && typeof controller?.prompt === 'function') {
     await controller.prompt({ sessionId, requestId, mode, content }, signal)
-    return
+    return true
   }
   const message = { id: randomUUID(), role: 'user', content, source: { kind: 'user', rpcId: requestId } }
   if (mode === 'steer' && typeof agent.steer === 'function') agent.steer(message)
   else if (typeof agent.followup === 'function') agent.followup(message)
   else agent.send(message, mode === 'steer' ? 'next-step' : 'next-turn', true)
+  return true
 }
 
 /**

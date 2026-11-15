@@ -32,7 +32,7 @@ export const SEND_SCHEMA = {
 export function createSendTool(getService) {
   return {
     name: 'deltachat_send',
-    description: 'Send a message, files or a reaction into a Delta Chat chat of the DSH Delta Chat bot, addressed by its numeric chat id. Not for answering a Delta Chat message in its own session: the final answer of the turn is delivered there by itself. Use it to reach a chat from another session or a job, to send files, or to react to a message. The message is also recorded in the session bound to that chat; no turn is started.',
+    description: 'Send a message, files or a reaction into a Delta Chat chat of the DSH Delta Chat bot, addressed by its numeric chat id. Not for answering in the chat this session is bound to: the final answer of the turn is delivered there by itself, so text-only sends into that chat are refused. Use it to reach another chat, to send files, or to react to a message. The message is also recorded in the session bound to that chat; no turn is started.',
     parameters: SEND_SCHEMA,
     output: { schema: { type: 'object' }, render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, null, 2) }] },
     async execute(args, exec) {

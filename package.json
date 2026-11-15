@@ -1,6 +1,6 @@
 {
   "name": "@soffits/dsh-deltachat-bot",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Delta Chat bot for DeepSeek Harness: an end-to-end encrypted chatmail bot on several relays, one DSH session per chat, commands, files, voice messages and a send service for other plugins.",
   "type": "module",
   "main": "./index.js",

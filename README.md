@@ -57,10 +57,12 @@ Every message the agent receives starts with a line the bot adds from the sender
 
 - The first message in a chat starts a new session in `cwd`. Each group you create with the bot gets its own session, much like a separate topic.
 - Session titles use `DeltaChat-<person>-<task>`: the other party in the chat (a group's name, for a group) plus either the conversation title DSH produces or the chat's name until that title exists. A person's name comes from `peopleFile` when configured, else from `allowedUsers`, else from their Delta Chat profile.
-- If a message arrives while a turn is running, it joins that turn, as in the Web UI (`busyMessages: steer`; the message gets a 👀 reaction). With `busyMessages: queue`, it waits for the turn to finish.
+- Delta Chat has no typing indicator, so the bot reacts ⏳ to your message as soon as it takes it and removes the reaction once the answer is sent (also when the turn fails or is stopped, and after a restart).
+- If a message arrives while a turn is running, it joins that turn, as in the Web UI (`busyMessages: steer`), and shows 👀 until that turn ends. With `busyMessages: queue`, it waits for the turn to finish and keeps ⏳ until its own turn is answered.
 - Turns started elsewhere (scheduled tasks, the Web UI) also show up in the chat unless `mirrorTurns` is off.
 - When the turn ends, replies arrive as plain text: Delta Chat apps do not render Markdown, so the bot turns it into readable text. Files the agent presents, and local images inside an answer, are sent as files. An answer that is exactly `[SILENT]` sends nothing.
 - The model receives images you send as images; other files come through as attachments. Voice messages are transcribed by DSH's speech-to-text service (or by a command you choose; see `transcriber`) and attached.
+- When the agent starts helpers (subagents) during a turn the chat receives, one status message lists them with their model and running time, and is edited as each one starts and finishes; `/agents` lists the session's helpers with their last reports.
 - Quoting a message tells the agent what you are replying to. A reaction to the bot's message is saved in the session but does not begin a turn.
 - When the agent asks a question, the options show as a numbered list: answer with a number or in your own words. A tool that needs approval waits for `/allow` or `/deny`.
 
@@ -77,6 +79,7 @@ Send these as messages; Delta Chat apps make them tappable.
 | `/status` | Bot, relay and session status |
 | `/current` | Show this chat's session |
 | `/last [1-5]` | Show the latest answers |
+| `/agents` | List the session's helpers and their last reports |
 | `/sessions` | List workspaces; `/sessions 2` displays workspace 2's sessions; `/sessions 2 3` brings session 3 into this chat (`0` opens a new one) |
 | `/workspace <n>` | Open a fresh session in workspace n |
 | `/fork [name]` | Make a new group with the same people and fork the session there |
@@ -110,7 +113,7 @@ await ctx.get('deltachatChats').send({
 
 Errors a retry cannot solve carry `retryable: false`. The message is also recorded in the session tied to that chat, without starting a turn, so the agent knows it went out; if the person quotes it later, the agent can tell which job or session sent it. `chats()` lists chats bound to sessions, and `invite()` returns the invite link.
 
-Agents can use the `deltachat_send` tool, which offers the same options (plus `reaction` to react to a message). From a shell:
+Agents can use the `deltachat_send` tool, which offers the same options (plus `reaction` to react to a message). A session's answer already goes to its own chat, so the tool refuses text-only sends from a session into the chat it is bound to, and text it sent there with files is not repeated in the answer. From a shell:
 
 ```sh
 dsh-deltachat send --chat 10 --job backup "Backup done"
