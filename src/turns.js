@@ -16,8 +16,9 @@ export function createTurns({ ctx, getStore, isRunning, setting, outbound, react
   const { queueOut, notice, sendText, sendFiles, checkFiles } = outbound
   /**
    * Turns of bound sessions by session id: `{ current, turns: Map<turn, record>,
-   * pendingOurs, pendingIds }`; `pendingIds` are Delta Chat messages taken
-   * before their turn started.
+   * pendingOurs, pendingIds, lastOurs }`; `pendingIds` are Delta Chat messages
+   * taken before their turn started, `lastOurs` whether the last turn that
+   * ended was started from Delta Chat.
    */
   const sessionTurns = new Map()
 
@@ -25,7 +26,7 @@ export function createTurns({ ctx, getStore, isRunning, setting, outbound, react
   function turnsOf(sessionId) {
     let entry = sessionTurns.get(sessionId)
     if (entry === undefined) {
-      entry = { current: undefined, turns: new Map(), pendingOurs: undefined, pendingIds: [] }
+      entry = { current: undefined, turns: new Map(), pendingOurs: undefined, pendingIds: [], lastOurs: false }
       sessionTurns.set(sessionId, entry)
     }
     return entry
@@ -81,6 +82,11 @@ export function createTurns({ ctx, getStore, isRunning, setting, outbound, react
         return
       }
       if (rpcId.startsWith('deltachat-claim:')) return
+      // A helper's report wakes its parent: that turn answers the chat the delegating turn came from.
+      if ((source?.kind === 'subagent-settled' || source?.kind === 'agent-message') && record !== undefined) {
+        if (entry.lastOurs) record.ours = true
+        return
+      }
       if (source?.kind === 'goal' && record !== undefined) record.goal = true
       if (!mirror) return
       const label = source?.kind === 'schedule' ? '⏰ Scheduled task' : source?.kind !== 'user' ? undefined : rpcId.startsWith('telegram') ? '✈️ From Telegram' : '🖥 From Web'
@@ -114,6 +120,7 @@ export function createTurns({ ctx, getStore, isRunning, setting, outbound, react
     if (event.type === 'turn/end') {
       const turn = event.data?.turn
       const finished = entry.turns.get(turn)
+      if (finished !== undefined) entry.lastOurs = finished.ours
       entry.turns.delete(turn)
       if (entry.current === turn) entry.current = undefined
       // The reactions go once the answer is out, also when the turn failed or was stopped.

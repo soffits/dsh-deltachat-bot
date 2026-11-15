@@ -429,3 +429,35 @@ test('without message edits the helper status goes out as a new message', async 
   await until(() => texts(chat).includes('🤖 1 helper done:\n✓ Research prices (m1, <1 min)'), 'the status as a new message', 600)
   host.dispose()
 })
+
+test('a helper announced before its parent lists it gets its label at a later update', async () => {
+  const { host, chat } = await start()
+  await chat.handled(chat.addIncoming({ text: 'look into it' }))
+  const { sessionId, requestId } = host.prompts[0]
+  host.sessionEvent(sessionId, 'turn/start', { turn: 1 })
+  host.sessionEvent(sessionId, 'user/message', { source: { kind: 'user', rpcId: requestId } })
+  const child = host.addChild(sessionId, 'child-late-1', 'Late label')
+  const catalog = await host.services.subagents.listChildren(sessionId)
+  host.services.subagents.listChildren = async () => []
+  host.emit('subagent/start', { runId: 'r1', id: 'child-late-1', provider: 'spawn', local: true })
+  await until(() => texts(chat).some((text) => text.startsWith('🤖')), 'the status message', 600)
+  assert.match(texts(chat).find((text) => text.startsWith('🤖')), /⏳ helper child-la/u)
+  host.services.subagents.listChildren = async () => catalog
+  host.emit('subagent/end', { runId: 'r1', id: child.id, stopReason: 'completed' })
+  await until(() => chat.calls.some((call) => call.name === 'sendEditRequest' && /✓ Late label/u.test(call.args[2])), 'the labelled edit', 600)
+  host.dispose()
+})
+
+test('with mirroring off, a turn woken by a helper report still answers the chat that delegated', async () => {
+  const { host, chat } = await start({ config: { mirrorTurns: false } })
+  await chat.handled(chat.addIncoming({ text: 'delegate this' }))
+  const { sessionId, requestId } = host.prompts[0]
+  runTurn(host, sessionId, 1, { requestId, answer: 'Started a helper.' })
+  await until(() => texts(chat).includes('Started a helper.'), 'the first answer')
+  host.sessionEvent(sessionId, 'turn/start', { turn: 2 })
+  host.sessionEvent(sessionId, 'user/message', { source: { kind: 'subagent-settled' } })
+  host.sessionEvent(sessionId, 'assistant/message', { turn: 2, message: { content: [{ type: 'text', text: 'The helper found it.' }] } })
+  host.sessionEvent(sessionId, 'turn/end', { turn: 2, reason: { kind: 'completed' } })
+  await until(() => texts(chat).includes('The helper found it.'), 'the follow-up answer')
+  host.dispose()
+})

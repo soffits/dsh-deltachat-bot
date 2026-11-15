@@ -61,16 +61,25 @@ export function createHelpers({ ctx, getStore, getRuntime, outbound, currentTurn
     return undefined
   }
 
-  /** @returns the label a parent gave its child, from the parent's catalog. */
-  async function labelOf(parentId, childId) {
-    try {
-      const children = await ctx.get('subagents')?.listChildren(parentId)
-      const label = children?.find((child) => child.id === childId)?.label
-      if (typeof label === 'string' && label.trim()) return clip(label.trim(), 80)
-    } catch {
-      // The catalog is optional; the id stands in.
+  /**
+   * Fill in labels from the parents' catalogs. A child can be announced
+   * before its parent's catalog lists it, so this runs at every publish until
+   * the label is found; meanwhile the id stands in.
+   */
+  async function nameHelpers(helpers) {
+    for (const helper of helpers) {
+      if (helper.named) continue
+      try {
+        const children = await ctx.get('subagents')?.listChildren(helper.parentId)
+        const label = children?.find((child) => child.id === helper.id)?.label
+        if (typeof label === 'string' && label.trim()) {
+          helper.label = clip(label.trim(), 80)
+          helper.named = true
+        }
+      } catch {
+        // The catalog is optional.
+      }
     }
-    return `helper ${String(childId).slice(0, 8)}`
   }
 
   /** Send or edit a chat's status message after a short pause. */
@@ -88,6 +97,7 @@ export function createHelpers({ ctx, getStore, getRuntime, outbound, currentTurn
     const runtime = getRuntime()
     if (runtime === undefined) return
     const helpers = [...board.helpers.values()]
+    await nameHelpers(helpers)
     const text = boardText(helpers, now())
     const done = helpers.every((helper) => helper.endedAt !== undefined)
     if (done && boards.get(chatId) === board) boards.delete(chatId)
@@ -121,9 +131,8 @@ export function createHelpers({ ctx, getStore, getRuntime, outbound, currentTurn
       boards.set(chatId, board)
     }
     const parentId = ctx.get('agents')?.get(info.id)?.session?.header?.parentSession ?? sessionId
-    const helper = { id: info.id, label: '', model: '', startedAt: now(), endedAt: undefined, stopReason: undefined }
+    const helper = { id: info.id, parentId, label: `helper ${String(info.id).slice(0, 8)}`, named: false, model: '', startedAt: now(), endedAt: undefined, stopReason: undefined }
     board.helpers.set(info.runId, helper)
-    helper.label = await labelOf(parentId, info.id)
     helper.model = (await sessionModelOf(ctx, info.id).catch(() => undefined))?.model ?? ''
     schedule(chatId, board)
   }
