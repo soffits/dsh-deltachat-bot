@@ -1,5 +1,7 @@
 # dsh-deltachat-bot
 
+Feature-complete; no longer maintained. Forks welcome.
+
 Use [Delta Chat](https://delta.chat) to reach sessions in your [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness). Within DSH, the plugin runs a Delta Chat bot: it creates its own chatmail address (end-to-end encrypted; no phone number or sign-up needed), keeps that address on several relays so it stays reachable when a relay goes down, and ties each Delta Chat chat to a DSH session. Message it just as you would in the Web UI; answers, files and images come back to you as messages.
 
 ## Installation

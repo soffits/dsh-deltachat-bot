@@ -29,4 +29,4 @@
 ## Git and releases
 
 - Conventional Commits, one-line subjects. Squash merges; delete the branch when merging.
-- Releases: move `Unreleased` in `CHANGELOG.md` under the new version, bump `package.json`, merge, wait for green CI on `main`, then `npm publish`. Bump `@deltachat/stdio-rpc-server` and `@deltachat/jsonrpc-client` together (Dependabot groups them) and run `npm run e2e` before releasing a core update.
+- Releases: move `Unreleased` in `CHANGELOG.md` under the new version, bump `package.json`, merge, wait for green CI on `main`, then `npm publish`. Bump `@deltachat/stdio-rpc-server` and `@deltachat/jsonrpc-client` together and run `npm run e2e` before releasing a core update.
