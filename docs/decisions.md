@@ -4,7 +4,7 @@
 
 - Own plugin on the official `@deltachat/stdio-rpc-server` + `@deltachat/jsonrpc-client` (MPL-2.0, maintained with the chatmail core). No DSH Delta Chat plugin existed; the other bridges looked at (nanoclaw's `add-deltachat` adapter, hermes-deltachat, deltabot-cli, dcbot-cli) target other hosts or wrap the same library. Their practice was adopted where it fits: `bot=1`, `addTransportFromQr("dcaccount:<relay>")` per relay (deltabot-cli), an IO watchdog (nanoclaw).
 - The RPC server is spawned in `src/core.js`, not with `startDeltaChat`: that helper throws from the child's `exit`/`error` handlers, which would crash the Host process. An unexpected exit is reported and the bot restarts with backoff (5 s doubling to 5 min). The server also exits by itself when the Host dies (its stdin closes).
-- Both `@deltachat` packages are pinned to the same exact version; Dependabot bumps them as one group.
+- Both `@deltachat` packages are pinned to the same exact version and bumped together.
 - Session handling, delivery rules (`messageAnswer`, `[SILENT]`, steering, recording sends in the bound session) follow soffits/dsh-telegram-bot, so both chat bridges behave alike.
 
 ## Identity
