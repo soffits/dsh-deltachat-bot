@@ -52,16 +52,25 @@ export function createOperations({ ctx, getStore, storeReady, requireRuntime, ge
     const text = typeof request?.text === 'string' ? request.text.trim() : ''
     const paths = Array.isArray(request?.files) ? request.files.map(String) : []
     if (text.length === 0 && paths.length === 0) throw finalError('Nothing to send: give text or files.')
+    const from = request?.from ?? {}
+    const sessionId = store.chat(chatId)?.sessionId
+    const ownTurn = typeof from.sessionId === 'string' && from.sessionId === sessionId ? currentTurn(sessionId) : undefined
+    // The answer of a turn this chat receives is delivered by itself, so text
+    // a session sends into its own chat would arrive twice.
+    const delivered = ownTurn !== undefined && (ownTurn.ours || ownTurn.goal || ownTurn.mirrored)
+    if (delivered && paths.length === 0) {
+      throw finalError('This session is bound to that chat and its answer is delivered there when the turn ends: write the text in your answer instead of sending it.')
+    }
     const files = await checkFiles(paths)
     const messageIds = await queueOut(chatId, async () => {
       const ids = text.length > 0 ? await sendText(chatId, text, { quote: replyTo }) : []
       ids.push(...await sendFiles(chatId, files))
       return ids
     })
-    const from = request?.from ?? {}
-    const sessionId = store.chat(chatId)?.sessionId
-    const ownTurn = typeof from.sessionId === 'string' && from.sessionId === sessionId ? currentTurn(sessionId) : undefined
-    if (ownTurn !== undefined) ownTurn.sent = true
+    if (ownTurn !== undefined) {
+      ownTurn.sent = true
+      if (text.length > 0) ownTurn.sentTexts.push(text)
+    }
     await store.noteSent({
       chatId,
       messageIds,

@@ -1,7 +1,8 @@
 /**
  * Durable bot state: which DSH session each Delta Chat chat is bound to,
  * contacts that wrote without being allowed, and what was sent on behalf of
- * jobs and sessions (so a quoted reply can say where a message came from).
+ * jobs and sessions (so a quoted reply can say where a message came from),
+ * and messages that carry the bot's working reaction.
  */
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
@@ -14,7 +15,7 @@ const PENDING_LIMIT = 50
 
 /** @returns an empty state document. */
 function emptyState() {
-  return { version: 1, chats: {}, pending: {}, sent: [], picks: {} }
+  return { version: 1, chats: {}, pending: {}, sent: [], picks: {}, reactions: {} }
 }
 
 /**
@@ -38,7 +39,7 @@ async function readJson(path) {
 export async function openState(path = join(dataDir(), 'state.json')) {
   const loaded = await readJson(path)
   const state = { ...emptyState(), ...(loaded ?? {}) }
-  for (const key of ['chats', 'pending', 'picks']) {
+  for (const key of ['chats', 'pending', 'picks', 'reactions']) {
     if (state[key] === null || typeof state[key] !== 'object' || Array.isArray(state[key])) state[key] = {}
   }
   if (!Array.isArray(state.sent)) state.sent = []
@@ -133,6 +134,20 @@ export async function openState(path = join(dataDir(), 'state.json')) {
     async noteSent(record) {
       state.sent.push({ ...record, at: Date.now() })
       if (state.sent.length > SENT_LIMIT) state.sent.splice(0, state.sent.length - SENT_LIMIT)
+      await store.save()
+    },
+    /** @returns message id → chat id of messages with the bot's working reaction. */
+    reactions() {
+      return { ...state.reactions }
+    },
+    /** Remember a message that got the working reaction. */
+    async noteReaction(msgId, chatId) {
+      state.reactions[String(msgId)] = chatId
+      await store.save()
+    },
+    /** Forget messages whose working reaction was removed. */
+    async dropReactions(msgIds) {
+      for (const msgId of msgIds) delete state.reactions[String(msgId)]
       await store.save()
     },
     /** @returns the send record holding a Delta Chat message id, or undefined. */

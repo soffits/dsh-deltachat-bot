@@ -22,6 +22,7 @@ export const COMMANDS = [
   ['status', 'Bot and session status'],
   ['current', "Show this chat's session"],
   ['last', 'Show the latest answers: /last [1-5]'],
+  ['agents', "List this session's helpers and their last reports"],
   ['sessions', 'Browse workspaces and sessions, continue one here'],
   ['workspace', 'Start a new session in another workspace'],
   ['fork', 'Fork this session into a new group: /fork [name]'],
@@ -199,6 +200,7 @@ const HANDLERS = {
 
   async clear(bridge, { chatId }) {
     const removed = clearChatInbox(liveAgent(bridge, chatId), chatId)
+    await bridge.reactions.sweep(chatId)
     await bridge.notice(chatId, removed === 0 ? '🧹 Nothing is waiting.' : `🧹 Dropped ${removed} waiting message(s).`)
   },
 
@@ -219,6 +221,29 @@ const HANDLERS = {
       const label = texts.length === 1 ? 'Latest answer' : `Answer ${index + 1}/${texts.length}`
       await bridge.notice(chatId, `${label}:\n\n${toPlainText(text)}`)
     }
+  },
+
+  async agents(bridge, { chatId }) {
+    const sessionId = sessionOf(bridge, chatId)
+    if (sessionId === undefined) {
+      await bridge.notice(chatId, 'This chat has no session yet.')
+      return
+    }
+    const helpers = await bridge.helpers.list(sessionId)
+    if (helpers === undefined) {
+      await bridge.notice(chatId, 'Helpers are not available in this DSH.')
+      return
+    }
+    if (helpers.length === 0) {
+      await bridge.notice(chatId, 'This session has started no helpers.')
+      return
+    }
+    const lines = ['Helpers of this session:']
+    for (const [index, helper] of helpers.entries()) {
+      lines.push('', `${index + 1}. ${helper.running ? '⏳' : '✓'} ${helper.label} · ${age(helper.createdAt)}`)
+      lines.push(helper.report ? clip(toPlainText(helper.report), 400) : helper.running ? '(working)' : '(no report)')
+    }
+    await bridge.notice(chatId, lines.join('\n'))
   },
 
   async sessions(bridge, { chatId }, args) {

@@ -3,15 +3,17 @@ import { randomUUID } from 'node:crypto'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { parseCommand, runCommand } from './commands.js'
-import { accountsDir, dataDir, name, POST_SOURCE_KIND, REQUEST_PREFIX, SERVICE_NAME, STEER_REACTION } from './constants.js'
+import { accountsDir, dataDir, name, POST_SOURCE_KIND, REQUEST_PREFIX, SERVICE_NAME } from './constants.js'
 import * as realCore from './core.js'
 import { allowedEntry, normalizeFingerprint, shortFingerprint } from './identity.js'
 import { composePrompt } from './inbound.js'
+import { createHelpers } from './helpers.js'
 import { createModelCatalog } from './models.js'
 import { createOperations, primaryAddress } from './operations.js'
 import { createOutbound } from './outbound.js'
 import { createPrompts } from './prompts.js'
-import { admitPrompt, createSession, recordMessage, resolveAgent, unarchive } from './sessions.js'
+import { createReactions } from './reactions.js'
+import { admitPrompt, createSession, hasRequest, recordMessage, resolveAgent, unarchive } from './sessions.js'
 import { createSpool } from './spool.js'
 import { openState } from './state.js'
 import { clip } from './text.js'
@@ -129,18 +131,21 @@ export function createBridge(ctx, config, core) {
 
   const outbound = createOutbound({ requireRuntime, chatState, reportError, messageOf })
   const { notice, sendText } = outbound
+  const reactions = createReactions({ ctx, getStore: () => store, getRuntime: () => runtime, reportError })
   const turns = createTurns({
     ctx,
     getStore: () => store,
     isRunning: () => runtime !== undefined,
     setting,
     outbound,
+    reactions,
     chatState,
     publishStatus,
     fireAndForget,
     messageOf,
   })
   const { currentTurn } = turns
+  const helpers = createHelpers({ ctx, getStore: () => store, getRuntime: () => runtime, outbound, currentTurn, reportError })
   const operations = createOperations({
     ctx,
     getStore: () => store,
@@ -353,7 +358,8 @@ export function createBridge(ctx, config, core) {
 
   /**
    * Hand a message to the chat's session: into the running turn (`steer`) or
-   * after it (`queue`), with its sender line, quote and file.
+   * after it (`queue`), with its sender line, quote and file. The message gets
+   * the working reaction first, so the sender sees at once that it was taken.
    */
   async function dispatchPrompt(chatId, msg, sender) {
     const { dc, accountId } = requireRuntime()
@@ -362,7 +368,15 @@ export function createBridge(ctx, config, core) {
     while (chat.admission !== undefined) await chat.admission
     let release
     chat.admission = new Promise((resolve) => { release = resolve })
+    const requestId = `${REQUEST_PREFIX}${chatId}:${msg.id}`
+    const steer = setting('busyMessages', 'steer') !== 'queue'
+    let react = false
     try {
+      const boundId = store.chat(chatId)?.sessionId
+      const live = typeof boundId === 'string' ? ctx.get('agents')?.get(boundId) : undefined
+      // A message handed over before (a restart before it was marked seen) gets no new sign.
+      react = live === undefined || !hasRequest(live, requestId)
+      if (react) await reactions.mark(chatId, msg.id, reactions.emojiFor(live?.status !== undefined && live.status !== 'idle', steer))
       let quotedOwn = false
       let sentRecord
       if (msg.quote?.kind === 'WithMessage') {
@@ -390,12 +404,14 @@ export function createBridge(ctx, config, core) {
       const sessionId = agent.session?.id ?? agent.id
       if (await unarchive(ctx, sessionId)) info(`unarchived session ${sessionId} for a message from chat ${chatId}`)
       const running = agent.status !== undefined && agent.status !== 'idle'
-      const mode = running && setting('busyMessages', 'steer') !== 'queue' ? 'steer' : 'queue'
-      const requestId = `${REQUEST_PREFIX}${chatId}:${msg.id}`
-      await admitPrompt(ctx, agent, { requestId, text: prompt.text, attachments: prompt.attachments, mode }, lifetime.signal)
-      if (running) {
-        await dc.rpc.sendReaction(accountId, msg.id, [mode === 'steer' ? STEER_REACTION : '⏳']).catch(() => {})
-      }
+      const mode = running && steer ? 'steer' : 'queue'
+      const admitted = await admitPrompt(ctx, agent, { requestId, text: prompt.text, attachments: prompt.attachments, mode }, lifetime.signal)
+      if (!react) return
+      if (admitted) reactions.admitted(msg.id)
+      else await reactions.release([msg.id])
+    } catch (error) {
+      if (react) await reactions.release([msg.id]).catch(() => {})
+      throw error
     } finally {
       chat.admission = undefined
       release()
@@ -487,6 +503,9 @@ export function createBridge(ctx, config, core) {
       info(`running as ${primary}; invite link written to ${join(dataDir(), 'invite.txt')}`)
       await publishStatus({ state: 'running', detail: '', primary, invite: link })
       spool.start().catch((error) => reportError('spool', error))
+      // Working reactions left by turns that ended while the bot was down,
+      // cleared before unseen messages are handed over (and marked) again.
+      await reactions.resume().catch((error) => reportError('reactions', error))
       // Messages that arrived while the bot was down.
       for (const msgId of (await setup(dc.rpc.getFreshMsgs(accountId))).sort((left, right) => left - right)) void onIncoming(msgId)
     } catch (error) {
@@ -586,6 +605,8 @@ export function createBridge(ctx, config, core) {
     chatState,
     currentTurn,
     ensureAgent,
+    reactions,
+    helpers,
     notice,
     sendText,
     modelCatalog,
@@ -611,6 +632,9 @@ export function createBridge(ctx, config, core) {
     else if (event?.type === 'request/header') fireAndForget('title', () => startTitle(session.id))
   }, { global: true })
 
+  ctx.on('subagent/start', (info) => fireAndForget('helpers', () => helpers.onStart(info)), { global: true })
+  ctx.on('subagent/end', (info) => fireAndForget('helpers', () => helpers.onEnd(info)), { global: true })
+
   ctx.on('settings/document-updated', (namespace) => {
     if (namespace === name) fireAndForget('settings', () => applySettings())
   })
@@ -622,6 +646,7 @@ export function createBridge(ctx, config, core) {
       lifetime.abort()
       if (retryTimer !== undefined) clearTimeout(retryTimer)
       prompts.cancelAll()
+      helpers.dispose()
       stopRuntime()
     }
   }, 'dsh-deltachat-bot: runtime')

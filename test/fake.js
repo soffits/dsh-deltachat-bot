@@ -19,9 +19,10 @@ export function settle(ms = 30) {
  * Wait until a condition holds, failing after a while.
  * @param check - returns true when done.
  * @param what - description for the failure.
+ * @param attempts - checks, 10 ms apart, before giving up.
  */
-export async function until(check, what = 'condition') {
-  for (let attempt = 0; attempt < 200; attempt += 1) {
+export async function until(check, what = 'condition', attempts = 200) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
     if (check()) return
     await settle(10)
   }
@@ -216,6 +217,11 @@ export function makeHost({ config = {} } = {}) {
     },
     async prompt(request) {
       prompts.push(request)
+      // A prompt to a running session waits in its inbox until the agent takes it.
+      const agent = agents.get(request.sessionId)
+      if (agent !== undefined && agent.status !== 'idle') {
+        agent.inbox[request.mode === 'steer' ? 'nextStep' : 'nextTurn'].push({ id: randomUUID(), role: 'user', content: request.content, source: { kind: 'user', rpcId: request.requestId } })
+      }
       return { accepted: true }
     },
     async fork({ sessionId }) {
@@ -239,6 +245,8 @@ export function makeHost({ config = {} } = {}) {
     },
     async rename() {},
   }
+  /** Helper catalogs by parent session id. */
+  const children = new Map()
   const titleOf = (session) => session.snapshotEvents().filter((event) => event.type === 'session/title').at(-1)?.data
   const services = {
     agents: { get: (id) => agents.get(id) },
@@ -248,6 +256,8 @@ export function makeHost({ config = {} } = {}) {
       refresh: async (session) => session.append('session/title', { title: '[Delta Chat message from Tester', source: { kind: 'fallback' }, messageSeqs: [1] }),
     },
     sessionController: controller,
+    subagents: { listChildren: async (parentId) => children.get(parentId) ?? [] },
+    sessionQuery: { readSurface: async (sessionId) => ({ events: agents.get(sessionId)?.session.snapshotEvents() ?? [] }) },
     attachments: {
       saveImage: async ({ name }) => ({ id: `img-${name}` }),
       saveFile: async ({ name }) => ({ id: `file-${name}` }),
@@ -292,6 +302,18 @@ export function makeHost({ config = {} } = {}) {
     logs,
     services,
     service: () => provided.get('deltachatChats'),
+    /** Deliver a Host event, such as `subagent/start`, to the bridge's listeners. */
+    emit(name, data) {
+      for (const handler of listeners.get(name) ?? []) handler(data)
+    },
+    /** Make a helper session under a parent, listed in the parent's catalog. */
+    addChild(parentId, childId, label) {
+      const child = makeAgent(childId, '/work/one')
+      child.session.header.parentSession = parentId
+      agents.set(childId, child)
+      children.set(parentId, [...(children.get(parentId) ?? []), { id: childId, mode: 'continuable', label, createdAt: Date.now() }])
+      return child
+    },
     /** Deliver a session event to the bridge's global listener. */
     sessionEvent(sessionId, type, data) {
       for (const handler of listeners.get('session/event') ?? []) handler({ id: sessionId }, { type, data })

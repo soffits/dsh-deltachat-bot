@@ -1,6 +1,7 @@
 /**
  * Turn delivery: follow every session bound to a chat, collect each turn's
- * answer, and send it when the turn ends.
+ * answer, send it when the turn ends, then clear the working reactions of
+ * its messages.
  */
 import { basename } from 'node:path'
 import { REQUEST_PREFIX } from './constants.js'
@@ -8,22 +9,31 @@ import { clip, localImagePaths, messageAnswer, stripSilent } from './text.js'
 
 /**
  * Create the turn tracker.
- * @param deps - `{ ctx, getStore, isRunning, setting, outbound, chatState, publishStatus, fireAndForget, messageOf }`.
+ * @param deps - `{ ctx, getStore, isRunning, setting, outbound, reactions, chatState, publishStatus, fireAndForget, messageOf }`.
  * @returns `{ onSessionEvent, currentTurn }`.
  */
-export function createTurns({ ctx, getStore, isRunning, setting, outbound, chatState, publishStatus, fireAndForget, messageOf }) {
+export function createTurns({ ctx, getStore, isRunning, setting, outbound, reactions, chatState, publishStatus, fireAndForget, messageOf }) {
   const { queueOut, notice, sendText, sendFiles, checkFiles } = outbound
-  /** Turns of bound sessions by session id: `{ current, turns: Map<turn, record>, pendingOurs }`. */
+  /**
+   * Turns of bound sessions by session id: `{ current, turns: Map<turn, record>,
+   * pendingOurs, pendingIds }`; `pendingIds` are Delta Chat messages taken
+   * before their turn started.
+   */
   const sessionTurns = new Map()
 
   /** @returns the turn bookkeeping of a session. */
   function turnsOf(sessionId) {
     let entry = sessionTurns.get(sessionId)
     if (entry === undefined) {
-      entry = { current: undefined, turns: new Map(), pendingOurs: undefined }
+      entry = { current: undefined, turns: new Map(), pendingOurs: undefined, pendingIds: [] }
       sessionTurns.set(sessionId, entry)
     }
     return entry
+  }
+
+  /** @returns the key that ties a turn's messages to it. */
+  function turnKey(sessionId, turn) {
+    return `${sessionId}\u0000${turn}`
   }
 
   /** @returns the record of a session's running turn, or undefined. */
@@ -46,10 +56,12 @@ export function createTurns({ ctx, getStore, isRunning, setting, outbound, chatS
     const entry = turnsOf(sessionId)
     const mirror = setting('mirrorTurns', true) === true
     if (event.type === 'turn/start') {
-      const record = { texts: [], ours: entry.pendingOurs !== undefined, lastPrompt: entry.pendingOurs, goal: false, mirrored: mirror, sent: false, stopped: false }
+      const record = { texts: [], sentTexts: [], ours: entry.pendingOurs !== undefined, lastPrompt: entry.pendingOurs, goal: false, mirrored: mirror, sent: false, stopped: false }
       entry.pendingOurs = undefined
       entry.current = event.data?.turn
       entry.turns.set(event.data?.turn, record)
+      for (const messageId of entry.pendingIds) reactions.attach(messageId, turnKey(sessionId, event.data?.turn))
+      entry.pendingIds = []
       return
     }
     const record = entry.current === undefined ? undefined : entry.turns.get(entry.current)
@@ -58,10 +70,13 @@ export function createTurns({ ctx, getStore, isRunning, setting, outbound, chatS
       const rpcId = typeof source?.rpcId === 'string' ? source.rpcId : ''
       if (source?.kind === 'user' && rpcId.startsWith(REQUEST_PREFIX)) {
         const messageId = Number(rpcId.slice(rpcId.lastIndexOf(':') + 1))
-        if (record === undefined) entry.pendingOurs = messageId
-        else {
+        if (record === undefined) {
+          entry.pendingOurs = messageId
+          entry.pendingIds.push(messageId)
+        } else {
           record.ours = true
           record.lastPrompt = messageId
+          reactions.attach(messageId, turnKey(sessionId, entry.current))
         }
         return
       }
@@ -101,7 +116,14 @@ export function createTurns({ ctx, getStore, isRunning, setting, outbound, chatS
       const finished = entry.turns.get(turn)
       entry.turns.delete(turn)
       if (entry.current === turn) entry.current = undefined
-      if (finished !== undefined) void queueOut(chatId, () => deliverTurn(chatId, finished, event.data?.reason))
+      // The reactions go once the answer is out, also when the turn failed or was stopped.
+      void queueOut(chatId, async () => {
+        try {
+          if (finished !== undefined) await deliverTurn(chatId, finished, event.data?.reason)
+        } finally {
+          await reactions.finishTurn(chatId, turnKey(sessionId, turn))
+        }
+      })
     }
   }
 
@@ -122,7 +144,9 @@ export function createTurns({ ctx, getStore, isRunning, setting, outbound, chatS
   async function deliverTurn(chatId, turn, reason) {
     if (!(turn.ours || turn.goal || turn.mirrored)) return
     if (turn.stopped || reason?.kind === 'aborted' || reason?.kind === 'blocked') return
-    const { text, silent } = stripSilent(turn.texts.join('\n\n'))
+    // Text the session already sent here with its files is not repeated.
+    const sent = new Set(turn.sentTexts.map(sameText))
+    const { text, silent } = stripSilent(turn.texts.filter((part) => !sent.has(sameText(part))).join('\n\n'))
     if (reason?.kind === 'error' && text.length === 0) {
       await sendText(chatId, `❌ ${reason.error?.message ?? 'The turn failed.'}`, { plain: true })
       return
@@ -138,6 +162,11 @@ export function createTurns({ ctx, getStore, isRunning, setting, outbound, chatS
       return
     }
     if (turn.ours && !silent && !turn.sent && reason?.kind !== 'error') await sendText(chatId, '✅ Done.', { plain: true })
+  }
+
+  /** @returns text reduced to its words, for comparing an answer with a send. */
+  function sameText(text) {
+    return String(text).replace(/\s+/gu, ' ').trim()
   }
 
   /** Tell the chat when its session's goal changes phase. */

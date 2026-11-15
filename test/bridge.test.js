@@ -1,16 +1,22 @@
 import assert from 'node:assert/strict'
+import { rm } from 'node:fs/promises'
+import { join } from 'node:path'
 import { test } from 'node:test'
 import { createBridge } from '../src/app.js'
 import { makeDeltaChat, makeHost, settle, until } from './fake.js'
 
-/** Start a bridge on fakes and wait until it runs. */
-async function start(options = {}) {
+/** Start a bridge on fakes and wait until it runs; `keepState` keeps `state.json` from earlier tests. */
+async function start({ keepState = false, ...options } = {}) {
+  if (!keepState) await rm(join(process.env.DSH_HOME, 'deltachat', 'state.json'), { force: true })
   const host = makeHost(options)
   const chat = makeDeltaChat()
   createBridge(host.ctx, host.config, chat.core)
   for (let attempt = 0; attempt < 50 && !chat.calls.some((call) => call.name === 'getFreshMsgs'); attempt += 1) await settle(10)
   return { host, chat }
 }
+
+/** @returns the reactions the bot set on one message, oldest first. */
+const reactionsOn = (chat, msgId) => chat.calls.filter((call) => call.name === 'sendReaction' && call.args[1] === msgId).map((call) => call.args[2])
 
 /** Run one turn of a session through the bridge's event listener. */
 function runTurn(host, sessionId, turn, { requestId, answer, reason = { kind: 'completed' }, source }) {
@@ -231,5 +237,195 @@ test('chat sessions are titled DeltaChat-<person>-<task>, from the people file w
   await until(() => title() === 'DeltaChat-Sam-book the train please', 'the prefixed title')
   await chat.handled(chat.addIncoming({ text: '/rename Train trip' }))
   assert.equal(title(), 'DeltaChat-Sam-Train trip')
+  host.dispose()
+})
+
+test('a message shows ⏳ while its turn runs, removed once the answer is out; commands get none', async () => {
+  const { host, chat } = await start()
+  const msgId = await chat.handled(chat.addIncoming({ text: 'hello' }))
+  assert.deepEqual(reactionsOn(chat, msgId), [['⏳']])
+  const { sessionId, requestId } = host.prompts[0]
+  runTurn(host, sessionId, 1, { requestId, answer: 'Hi.' })
+  await until(() => reactionsOn(chat, msgId).length === 2, 'the removal')
+  assert.deepEqual(reactionsOn(chat, msgId), [['⏳'], []])
+  const answerAt = chat.calls.findIndex((call) => call.name === 'sendMsg' && call.args[2].text === 'Hi.')
+  const removedAt = chat.calls.findIndex((call) => call.name === 'sendReaction' && call.args[1] === msgId && call.args[2].length === 0)
+  assert.ok(answerAt >= 0 && answerAt < removedAt)
+  const help = await chat.handled(chat.addIncoming({ text: '/help' }))
+  assert.deepEqual(reactionsOn(chat, help), [])
+  const { openState } = await import('../src/state.js')
+  assert.deepEqual((await openState()).reactions(), {})
+  host.dispose()
+})
+
+test('a steered message shows 👀 until the running turn ends', async () => {
+  const { host, chat } = await start()
+  await chat.handled(chat.addIncoming({ text: 'first' }))
+  const { sessionId, requestId } = host.prompts[0]
+  const agent = host.agents.get(sessionId)
+  host.sessionEvent(sessionId, 'turn/start', { turn: 1 })
+  host.sessionEvent(sessionId, 'user/message', { source: { kind: 'user', rpcId: requestId } })
+  agent.status = 'running'
+  const second = await chat.handled(chat.addIncoming({ text: 'also this' }))
+  assert.deepEqual(reactionsOn(chat, second), [['👀']])
+  agent.inbox.nextStep = []
+  host.sessionEvent(sessionId, 'user/message', { source: { kind: 'user', rpcId: host.prompts[1].requestId } })
+  host.sessionEvent(sessionId, 'assistant/message', { turn: 1, message: { content: [{ type: 'text', text: 'Both done.' }] } })
+  agent.status = 'idle'
+  host.sessionEvent(sessionId, 'turn/end', { turn: 1, reason: { kind: 'completed' } })
+  await until(() => reactionsOn(chat, second).length === 2, 'the removal')
+  assert.deepEqual(reactionsOn(chat, second), [['👀'], []])
+  host.dispose()
+})
+
+test('a queued message keeps ⏳ through the running turn and loses it after its own', async () => {
+  const { host, chat } = await start({ config: { busyMessages: 'queue' } })
+  const first = await chat.handled(chat.addIncoming({ text: 'first' }))
+  const { sessionId, requestId } = host.prompts[0]
+  const agent = host.agents.get(sessionId)
+  host.sessionEvent(sessionId, 'turn/start', { turn: 1 })
+  host.sessionEvent(sessionId, 'user/message', { source: { kind: 'user', rpcId: requestId } })
+  agent.status = 'running'
+  const second = await chat.handled(chat.addIncoming({ text: 'later' }))
+  assert.equal(host.prompts[1].mode, 'queue')
+  assert.deepEqual(reactionsOn(chat, second), [['⏳']])
+  host.sessionEvent(sessionId, 'turn/end', { turn: 1, reason: { kind: 'completed' } })
+  await until(() => reactionsOn(chat, first).length === 2, 'the first removal')
+  await settle()
+  assert.deepEqual(reactionsOn(chat, second), [['⏳']])
+  agent.inbox.nextTurn = []
+  runTurn(host, sessionId, 2, { requestId: host.prompts[1].requestId, answer: 'Later done.' })
+  await until(() => reactionsOn(chat, second).length === 2, 'the second removal')
+  host.dispose()
+})
+
+test('reactions go when a turn fails, is stopped, or its messages are cleared', async () => {
+  const { host, chat } = await start({ config: { busyMessages: 'queue' } })
+  const failed = await chat.handled(chat.addIncoming({ text: 'try this' }))
+  const { sessionId, requestId } = host.prompts[0]
+  const agent = host.agents.get(sessionId)
+  runTurn(host, sessionId, 1, { requestId, reason: { kind: 'error', error: { message: 'rate limited' } } })
+  await until(() => reactionsOn(chat, failed).length === 2, 'the removal after a failure')
+  assert.ok(texts(chat).includes('❌ rate limited'))
+
+  const running = await chat.handled(chat.addIncoming({ text: 'long job' }))
+  host.sessionEvent(sessionId, 'turn/start', { turn: 2 })
+  host.sessionEvent(sessionId, 'user/message', { source: { kind: 'user', rpcId: host.prompts[1].requestId } })
+  agent.status = 'running'
+  const cleared = await chat.handled(chat.addIncoming({ text: 'never mind' }))
+  await chat.handled(chat.addIncoming({ text: '/clear' }))
+  await until(() => reactionsOn(chat, cleared).length === 2, 'the removal after /clear')
+  assert.deepEqual(reactionsOn(chat, running), [['⏳']])
+
+  const waiting = await chat.handled(chat.addIncoming({ text: 'and this' }))
+  await chat.handled(chat.addIncoming({ text: '/stop' }))
+  agent.status = 'idle'
+  host.sessionEvent(sessionId, 'turn/end', { turn: 2, reason: { kind: 'aborted', reason: { kind: 'user' } } })
+  await until(() => reactionsOn(chat, running).length === 2 && reactionsOn(chat, waiting).length === 2, 'the removal after /stop')
+  host.dispose()
+})
+
+test('reactions left by an earlier run are removed at start when their session is idle', async () => {
+  const { openState } = await import('../src/state.js')
+  const before = await openState()
+  await before.noteReaction(9001, 10)
+  const { host, chat } = await start({ keepState: true })
+  await until(() => reactionsOn(chat, 9001).length === 1, 'the removal')
+  assert.deepEqual(reactionsOn(chat, 9001), [[]])
+  assert.deepEqual((await openState()).reactions(), {})
+  host.dispose()
+})
+
+test('a session cannot send its answer text into its own chat, and text sent with files is not repeated', async () => {
+  const { host, chat } = await start()
+  await chat.handled(chat.addIncoming({ text: 'hello' }))
+  const { sessionId, requestId } = host.prompts[0]
+  host.sessionEvent(sessionId, 'turn/start', { turn: 1 })
+  host.sessionEvent(sessionId, 'user/message', { source: { kind: 'user', rpcId: requestId } })
+  const from = { sessionId, label: `session ${sessionId}` }
+  await assert.rejects(host.service().send({ to: 10, text: 'Hi there.', from }), (error) => error.retryable === false && /write the text in your answer/u.test(error.message))
+  const file = join(process.env.DSH_HOME, 'note.txt')
+  await (await import('node:fs/promises')).writeFile(file, 'notes')
+  await host.service().send({ to: 10, text: 'Here are the notes.', files: [file], from })
+  const before = chat.sent.length
+  host.sessionEvent(sessionId, 'assistant/message', { turn: 1, message: { content: [{ type: 'text', text: 'Here are the notes.' }] } })
+  host.sessionEvent(sessionId, 'turn/end', { turn: 1, reason: { kind: 'completed' } })
+  await settle(50)
+  assert.equal(chat.sent.length, before)
+  assert.ok(!texts(chat).includes('✅ Done.'))
+  host.dispose()
+})
+
+test('another session or a job may still send text into the chat during its turn', async () => {
+  const { host, chat } = await start()
+  await chat.handled(chat.addIncoming({ text: 'hello' }))
+  const { sessionId, requestId } = host.prompts[0]
+  host.sessionEvent(sessionId, 'turn/start', { turn: 1 })
+  host.sessionEvent(sessionId, 'user/message', { source: { kind: 'user', rpcId: requestId } })
+  const result = await host.service().send({ to: 10, text: 'From elsewhere.', from: { sessionId: 'other-session' } })
+  assert.equal(result.recorded, true)
+  assert.equal(texts(chat).at(-1), 'From elsewhere.')
+  host.dispose()
+})
+
+test('helpers of a chat turn share one status message, edited as they start and finish', async () => {
+  const { host, chat } = await start()
+  await chat.handled(chat.addIncoming({ text: 'look into it' }))
+  const { sessionId, requestId } = host.prompts[0]
+  host.sessionEvent(sessionId, 'turn/start', { turn: 1 })
+  host.sessionEvent(sessionId, 'user/message', { source: { kind: 'user', rpcId: requestId } })
+  host.addChild(sessionId, 'child-a', 'Research prices')
+  host.addChild(sessionId, 'child-b', 'Check stock')
+  host.emit('subagent/start', { runId: 'r1', id: 'child-a', provider: 'spawn', local: true })
+  host.emit('subagent/start', { runId: 'r2', id: 'child-b', provider: 'spawn', local: true })
+  await until(() => texts(chat).some((text) => text.startsWith('🤖')), 'the status message', 600)
+  const status = chat.sent.find((message) => message.text.startsWith('🤖'))
+  assert.equal(status.text, '🤖 2 helpers working:\n⏳ Research prices (m1, <1 min)\n⏳ Check stock (m1, <1 min)')
+  const edits = () => chat.calls.filter((call) => call.name === 'sendEditRequest').map((call) => [call.args[1], call.args[2]])
+  host.emit('subagent/end', { runId: 'r1', id: 'child-a', stopReason: 'completed' })
+  await until(() => edits().length === 1, 'the first edit', 600)
+  assert.deepEqual(edits()[0], [status.id, '🤖 1 helper working:\n✓ Research prices (m1, <1 min)\n⏳ Check stock (m1, <1 min)'])
+  host.emit('subagent/end', { runId: 'r2', id: 'child-b', stopReason: 'error' })
+  await until(() => edits().length === 2, 'the final edit', 600)
+  assert.deepEqual(edits()[1], [status.id, '🤖 2 helpers done:\n✓ Research prices (m1, <1 min)\n✗ Check stock (m1, <1 min, error)'])
+  // A later helper opens a new status message; the finished one stays as it is.
+  host.addChild(sessionId, 'child-c', 'Summarize')
+  host.emit('subagent/start', { runId: 'r3', id: 'child-c', provider: 'spawn', local: true })
+  await until(() => chat.sent.filter((message) => message.text.startsWith('🤖')).length === 2, 'a new status message', 600)
+  assert.equal(edits().length, 2)
+  host.dispose()
+})
+
+test('helpers of sessions not bound to a chat, or of undelivered turns, are not shown; /agents lists reports', async () => {
+  const { host, chat } = await start({ config: { mirrorTurns: false } })
+  await chat.handled(chat.addIncoming({ text: 'hello' }))
+  const { sessionId } = host.prompts[0]
+  host.addChild('session-elsewhere', 'child-x', 'Other work')
+  host.emit('subagent/start', { runId: 'rx', id: 'child-x', provider: 'spawn', local: true })
+  // A turn started from the Web UI, with mirroring off.
+  host.sessionEvent(sessionId, 'turn/start', { turn: 1 })
+  const child = host.addChild(sessionId, 'child-y', 'Draft reply')
+  host.emit('subagent/start', { runId: 'ry', id: 'child-y', provider: 'spawn', local: true })
+  await settle(1800)
+  assert.ok(!texts(chat).some((text) => text.startsWith('🤖')))
+  child.session.append('assistant/message', { message: { content: [{ type: 'text', text: 'Draft is **ready**.' }] } })
+  await chat.handled(chat.addIncoming({ text: '/agents' }))
+  await until(() => texts(chat).some((text) => text.startsWith('Helpers of this session')), 'the /agents list')
+  assert.match(texts(chat).at(-1), /^Helpers of this session:\n\n1\. ✓ Draft reply · 0 min ago\nDraft is ready\.$/u)
+  host.dispose()
+})
+
+test('without message edits the helper status goes out as a new message', async () => {
+  const { host, chat } = await start()
+  chat.handlers.sendEditRequest = async () => { throw new Error('editing is not supported') }
+  await chat.handled(chat.addIncoming({ text: 'look into it' }))
+  const { sessionId, requestId } = host.prompts[0]
+  host.sessionEvent(sessionId, 'turn/start', { turn: 1 })
+  host.sessionEvent(sessionId, 'user/message', { source: { kind: 'user', rpcId: requestId } })
+  host.addChild(sessionId, 'child-a', 'Research prices')
+  host.emit('subagent/start', { runId: 'r1', id: 'child-a', provider: 'spawn', local: true })
+  await until(() => texts(chat).some((text) => text.startsWith('🤖')), 'the status message', 600)
+  host.emit('subagent/end', { runId: 'r1', id: 'child-a', stopReason: 'completed' })
+  await until(() => texts(chat).includes('🤖 1 helper done:\n✓ Research prices (m1, <1 min)'), 'the status as a new message', 600)
   host.dispose()
 })
